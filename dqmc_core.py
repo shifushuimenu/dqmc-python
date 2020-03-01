@@ -8,8 +8,14 @@
 # - possible inconsistencies between duplicate variables:
 #        Nsites, Ltrot, dtau
 #   are shared between the classes HS, Hubbard and Global
-# - resolve gr_up, gr_dn, gr[:,:,:] 
-
+# - resolve gr_up, gr_dn, gr[:,:,:]
+# - Abstract from the details of the HS transformation by using
+#   a function
+#           update_HS_field(site, tau)
+#           update_Greens_function(site, tau)
+# - Make the wrapping operations cyclic (accept also l<0 and l>Ntau)
+# - Use `@` instead of dot() or matmul(). 
+# - Check redundancies in `lrange = np.roll() ...`
 
 import numpy as np
 from scipy import linalg
@@ -22,11 +28,12 @@ class HS():
     """
 
     def __init__(self, dtau, Uint, mu, Nspecies):
-        assert(len(mu) == Nspecies); mu=np.array(mu)
+        assert(len(mu) == Nspecies)
+        mu = np.array(mu)
         if (Uint >= 0):
             # Auxiliary field couples to the spin.
             self.alpha = np.arccosh(np.exp(0.5*dtau*abs(Uint)))
-            # bb[0]=+1, bb[-1]=-1
+            # Different sign of the coupling for spin up and down: bb[0]=+1, bb[-1]=-1
             self.bb = np.array([+1, -1])
             self.dtau = dtau
             self.cc = np.zeros(Nspecies, dtype=np.float32)
@@ -34,12 +41,13 @@ class HS():
 
             self.gamma = np.zeros((Nspecies, 3))
             self.gamma[:, :] = np.nan  # init with invalid values
-            for spin in (1, -1):      # a[-1] is the last element of a[:]
+            for spin in (1, -1):       # a[-1] is the last element of a[:]
                 for s in np.arange(Nspecies):
                     self.gamma[s, spin] = np.exp(-2 *
                                                  self.alpha * self.bb[s]*spin) - 1.0
         else:
-            raise NotImplementedError('Negative U Hubbard model not implemented yet.')
+            raise NotImplementedError(
+                'Negative U Hubbard model not implemented yet.')
 
 
 class Hubbard():
@@ -87,16 +95,24 @@ class Global():
         self.Ltrot = Ltrot  # duplicate var
         if (init == 'hot'):
             self.HS_init_random()
+        elif (init == 'cold'):
+            self.HS_init_cold()
+        elif (init == 'load'):
+            raise NotImplementedError
         # single particle Green's function at current time slice
         # for spin up and spin down
         self.gr_up = np.zeros((self.Nsites, self.Nsites))
         self.gr_dn = np.zeros((self.Nsites, self.Nsites))
-        self.gr = np.zeros((2,self.Nsites, self.Nsites)) # replace: Nspecies=2
+        self.gr = np.zeros((2, self.Nsites, self.Nsites))  # replace: Nspecies=2
         self.current_tau = np.nan
+        # sign of the weight of the current configuration
+        self.sign = np.nan
 
     def HS_init_random(self):
         self.HS_spins = np.array([+1 if s > 0 else -1 for s in np.random.randint(
             2, size=self.Nsites*self.Ltrot)]).reshape((self.Nsites, self.Ltrot))
+    def HS_init_cold(self):
+        self.HS_spins = np.array([+1 for s in np.arange(self.Nsites*self.Ltrot)]).reshape((self.Nsites, self.Ltrot))
 
     def HS_init_load(self):
         raise NotImplementedError
@@ -118,8 +134,9 @@ def multB_fromL(A, l, s, HS_spins, HSparams, expmdtK):
     HS_spins = np.array(HS_spins)
 
     X1 = np.matmul(expmdtK, A)
-    X2 = np.diag(np.exp(HSparams.alpha*HSparams.bb[s]*HS_spins[:, l] - HSparams.cc[s]))
-    A[:,:] = np.matmul(X2, X1)
+    X2 = np.diag(
+        np.exp(HSparams.alpha*HSparams.bb[s]*HS_spins[:, l] - HSparams.cc[s]))
+    A[:, :] = np.matmul(X2, X1) # IMPROVE: sparse matrix multiplication
 
 
 def multB_fromR(A, l, s, HS_spins, HSparams, expmdtK):
@@ -136,10 +153,11 @@ def multB_fromR(A, l, s, HS_spins, HSparams, expmdtK):
     """
     assert(isinstance(HSparams, HS))
     HS_spins = np.array(HS_spins)
-    
-    X1 = np.diag(np.exp(HSparams.alpha*HSparams.bb[s]*HS_spins[:, l] - HSparams.cc[s]))
+
+    X1 = np.diag(
+        np.exp(HSparams.alpha*HSparams.bb[s]*HS_spins[:, l] - HSparams.cc[s]))
     X2 = np.matmul(A, X1)         # IMPROVE: sparse matrix multiplication
-    A[:,:] = np.matmul(X2, expmdtK)  # IMPROVE: checkerboard decomposition
+    A[:, :] = np.matmul(X2, expmdtK)  # IMPROVE: checkerboard decomposition
 
 
 def multinvB_fromR(A, l, s, HS_spins, HSparams, exppdtK):
@@ -158,8 +176,9 @@ def multinvB_fromR(A, l, s, HS_spins, HSparams, exppdtK):
     HS_spins = np.array(HS_spins)
 
     X1 = np.matmul(A, exppdtK)
-    X2 = np.diag(np.exp(-HSparams.alpha*HSparams.bb[s]*HS_spins[:, l] + HSparams.cc[s]))
-    A[:,:] = np.matmul(X1, X2)    
+    X2 = np.diag(
+        np.exp(-HSparams.alpha*HSparams.bb[s]*HS_spins[:, l] + HSparams.cc[s]))
+    A[:, :] = np.matmul(X1, X2) # IMPROVE: sparse matrix multiplication
 
 
 def multinvB_fromL(A, l, s, HS_spins, HSparams, exppdtK):
@@ -177,15 +196,16 @@ def multinvB_fromL(A, l, s, HS_spins, HSparams, exppdtK):
     assert(isinstance(HSparams, HS))
     HS_spins = np.array(HS_spins)
 
-    X1 = np.diag(np.exp(-HSparams.alpha*HSparams.bb[s]*HS_spins[:, l] + HSparams.cc[s]))
-    X2 = np.matmul(X1, A)          # IMPROVE: sparse matrix multiplication
-    A[:,:] = np.matmul(exppdtK, X2)  # IMPROVE: checkerboard decomposition
+    X1 = np.diag(
+        np.exp(-HSparams.alpha*HSparams.bb[s]*HS_spins[:, l] + HSparams.cc[s]))
+    X2 = np.matmul(X1, A)             # IMPROVE: sparse matrix multiplication
+    A[:, :] = np.matmul(exppdtK, X2)  # IMPROVE: checkerboard decomposition
 
 
 def make_gr(l, Hub, G, HSparams, stab_type='svd', istab=8):
     """
         Compute the single-particle Green's function at time slice l
-        from scratch according to:
+        for both spin species s \\in [0,1] from scratch according to:
 
             G(l)^{s} = ( 1 + B_{l} B_{l-1} ... B_1 B_L ... B_{l+1} )^{-1}
 
@@ -199,101 +219,195 @@ def make_gr(l, Hub, G, HSparams, stab_type='svd', istab=8):
     assert(isinstance(Hub, Hubbard))
     assert(isinstance(G, Global))
     assert(isinstance(HSparams, HS))
-    
-    # unnecessary helper variable 
+
+    # unnecessary helper variable
     gr = np.zeros((Hub.Nspecies, Hub.Nsites, Hub.Nsites))
+    weight = np.zeros(Hub.Nspecies)
 
     for s in range(Hub.Nspecies):
 
-        lrange = np.roll(np.arange(Hub.Ntau)[::-1], l)
+        lrange = np.roll(np.arange(Hub.Ntau)[::-1], l+1)
         A = np.eye(Hub.Nsites)
+        U_tmp = np.eye(Hub.Nsites)
+        V_tmp = np.eye(Hub.Nsites)
+        s_tmp = np.ones(Hub.Nsites)
         for idx, ll in enumerate(lrange[::-1]):
-            # kinetic term is assumed to be the same for both spin species 
+            # kinetic term is assumed to be the same for both spin species
             multB_fromL(A, ll, s, G.HS_spins, HSparams, Hub.expmdtK)
             if (idx % istab == 0):
-                # # stabilization: UDV decomposition of a *column-stratified matrix* is numerically stable 
-                # A = UD_term 
-                # # Chains of unitary matrices can be multiplied together in a stable manner. 
-                # V = V_term.dot(V) 
-                pass
-        # A = A.dot(V)
+                # stabilization: UDV decomposition of a *column-stratified matrix* is numerically stable
+                A = A.dot(U_tmp).dot(np.diag(s_tmp))
+                U_tmp, s_tmp, Vh = linalg.svd(A)
+                # Chains of unitary matrices can be multiplied together in a stable manner.
+                V_tmp = np.dot(Vh, V_tmp)
+                A = np.eye(Hub.Nsites)
+        # take care of the excess B_l matrices which are due to the fact
+        # that 'Ntau' is not a perfect multiple of 'istab'.
+        A = A.dot(U_tmp).dot(np.diag(s_tmp)).dot(V_tmp)
+        U_tmp, s_tmp, V_tmp = linalg.svd(A)
+        weight[s] = linalg.det(np.eye(Hub.Nsites) + A)
 
-        gr[s] = linalg.inv(np.eye(Hub.Nsites) + A)
+        # gr[s] = linalg.inv(np.eye(Hub.Nsites) + A)
+        VT = V_tmp.transpose()
+        UT = U_tmp.transpose()
+        VUT = V_tmp.dot(U_tmp).transpose()
+        gr[s] = VT.dot(linalg.inv(VUT + np.diag(s_tmp))).dot(UT)
 
-    G.gr_up = gr[0]
-    G.gr_dn = gr[1]
-    G.gr[0,:,:] = gr[0]
-    G.gr[1,:,:] = gr[1]
+    G.gr_up[:,:] = gr[0]
+    G.gr_dn[:,:] = gr[1]
+    G.gr[0, :, :] = gr[0]
+    G.gr[1, :, :] = gr[1]
+
+    G.current_tau = l
+    # Return the weight of the current configuration and its sign:
+    weight_tot = weight[0]*weight[1]
+    G.sign = np.sign(weight_tot)
+
+    return weight_tot, np.sign(weight_tot)
 
 
-def update_gr_Metropolis(gr, i, l, Hub, G, HSparams):
+def check_gr(gr_from_scratch, gr_old):
     """
-        Low-rank update of the Green's function after a single-spin flip
-        update at space-time site (i,l).
 
-        gr[0:Nspecies, 0:Nsites, 0:Nsites] is the Green's function at time slice l.
+    """
+    return np.allclose(gr_from_scratch, gr_old, rtol=1e-3, atol=1e-3)
+
+
+def update_gr_lowrank(gr, i, l, Hub, G, HSparams):
+    """
+        Low-rank update of the single-particle Green's function
+        after a single-spin flip update at space-time position 
+        (space, timeslice) = (i,l), i.e. 
+            G.HS_spins[i,l]  -->  -G.HS_spins[i,l].
+        NOTE: The formula for the update is in terms of the *old*
+              HS field configuration. Therefore HS_spins[:,:] is assumed 
+              to be the *old* configuration. HS_spins[i,l] is flipped 
+              explicitly *at the end* of this routine. 
+
+        gr[0:Nspecies, 0:Nsites, 0:Nsites] is the Green's function
+        for both spin species. 
+        The matrix gr[:,:,:] is changed in place. 
+    """
+    ratio = np.zeros(Hub.Nspecies, dtype=np.float32)
+    for s in np.arange(Hub.Nspecies):
+        ratio[s] = 1 + (1 - gr[s, i, i]) * HSparams.gamma[s, G.HS_spins[i, l]]
+
+    gr_old = gr.copy()  
+    for s in np.arange(Hub.Nspecies):
+        for j in np.arange(Hub.Nsites):
+            for k in np.arange(Hub.Nsites):
+                if (i == k):
+                    gr[s, j, k] = gr_old[s, j, k] \
+                        - ((1.0 - gr_old[s, i, k]) * HSparams.gamma[s,
+                            G.HS_spins[i, l]] * gr_old[s, j, i]) / ratio[s]
+                else:
+                    gr[s, j, k] = gr_old[s, j, k]  \
+                        + (gr_old[s, i, k] * HSparams.gamma[s, G.HS_spins[i, l]]
+                            * gr_old[s, j, i]) / ratio[s]
+
+    # update HS field configuration *after* updating the Green's function. 
+    G.HS_spins[i,l] = - G.HS_spins[i,l]
+
+def Metropolis_update(gr, i, l, Hub, G, HSparams):
+    """
+        Update a HS field at space-time position (i,l) with Metropolis 
+        or heat bath probability
+        and - if the update is accepted - perform a 
+        low-rank update of the Green's function.
+
+        Parameters:
+        -----------
+            gr[0:Nspecies, 0:Nsites, 0:Nsites] is the Green's function 
+                at time slice l.
+            (i,l): space-time coordinate to be updated.
+
+        Returns:
+        --------
+            updated: `True` if the single-spin flip update has been accepted,
+                     `False` otherwise.
     """
     assert(isinstance(Hub, Hubbard))
     assert(isinstance(G, Global))
     assert(isinstance(HSparams, HS))
+    # The low-rank update is only correct if the Green's function has been
+    # wrapped to the current time slice. 
+    assert(G.current_tau == l)
 
-    ratio = np.zeros(Hub.Nspecies, dtype=np.float32)
     # determinant ratios
+    ratio = np.zeros(Hub.Nspecies, dtype=np.float32)
     R = 1.0
     for s in np.arange(Hub.Nspecies):
         ratio[s] = 1 + (1 - gr[s, i, i]) * \
             HSparams.gamma[s, G.HS_spins[i, l]]
         R *= ratio[s]
-
-    if (R < np.random.rand()):
-        # update Green's function for spin up and spin down        
-        for s in np.arange(Hub.Nspecies):
-            for j in np.arange(Hub.Nsites):
-                for k in np.arange(Hub.Nsites):
-                    if (i == k):
-                        gr[s, j, k] = gr[s, j, k] \
-                            - ((1.0 - gr[s, i, k]) * HSparams.gamma[s,
-                                                                    G.HS_spins[i, l]] * gr[s, j, i]) / ratio[s]
-                    else:
-                        gr[s, j, k] = gr[s, j, k]  \
-                            + (gr[s, i, k] * HSparams.gamma[s, G.HS_spins[i, l]]
-                               * gr[s, j, i]) / ratio[s]
+    # If there is a sign problem, ...
+    G.sign *= np.sign(R)
+    R = abs(R)
+    # heat bath acceptance probability
+    # eta = R / (1.0 + R)
+    # Metropolis acceptance probability
+    eta = min(1.0, R)
+    updated = False
+    if (np.random.rand() < eta):
+        updated = True
+        # Update Green's function for spin up and spin down.
+        # G.gr[...] is changed in place. 
+        update_gr_lowrank(gr, i, l, Hub, G, HSparams)
+        # NOTE: The HS field configuration is updated inside 
+        # the routine update_gr_lowrank(...). Do not update 
+        # the HS field configuration outside this function. 
 
     # update the alternative variables for gr (superfluous)
-    G.gr_up[:,:] = gr[0,:,:]
-    G.gr_dn[:,:] = gr[1,:,:]
+    G.gr_up[:, :] = gr[0, :, :]
+    G.gr_dn[:, :] = gr[1, :, :]
+    # just in case
+    G.gr[:,:,:] = gr[:,:,:]
+
+    return updated
 
 
-def wrap_north(gr, l, s, Hub, G, HSparams):
+def wrap_north(gr, l, Hub, G, HSparams):
     """
         Propagate the Green's function from the current time slice l
         upward to the time slice l+1:
 
             G(l+1) = B_{l+1} G(l) B_{l+1}^{-1}
 
+        gr[0:Nspecies, 0:Nsites, 0:Nsites] is the Green's function 
+        for both spin species. The matrix gr[:,:,:] is changed in place. 
     """
     assert(isinstance(Hub, Hubbard))
     assert(isinstance(G, Global))
     assert(isinstance(HSparams, HS))
+    assert(l<Hub.Ntau-1)
+    
+    for s in np.arange(Hub.Nspecies):
+        multB_fromL(gr[s], l+1, s, G.HS_spins, HSparams, Hub.expmdtK)
+        multinvB_fromR(gr[s], l+1, s, G.HS_spins, HSparams, Hub.exppdtK)
+    
+    G.current_tau = l+1
 
-    multB_fromL(   gr, l+1, s, G.HS_spins, HSparams, Hub.expmdtK)
-    multinvB_fromR(gr, l+1, s, G.HS_spins, HSparams, Hub.exppdtK)
 
-
-def wrap_south(gr, l, s, Hub, G, HSparams):
+def wrap_south(gr, l, Hub, G, HSparams):
     """
         Propagate the Green's function from the current time slice l
         downward to the time slice l-1:
 
             G(l-1) = B_{l}^{-1} G(l) B_{l}
 
+        gr[0:Nspecies, 0:Nsites, 0:Nsites] is the Green's function 
+        for both spin species. The matrix gr[:,:,:] is changed in place.
     """
     assert(isinstance(Hub, Hubbard))
     assert(isinstance(G, Global))
     assert(isinstance(HSparams, HS))
+    assert(l>=0)
 
-    multB_fromR(gr, l, s, G.HS_spins, HSparams, Hub.expmdtK)
-    multinvB_fromL(gr, l, s, G.HS_spins, HSparams, Hub.exppdtK)
+    for s in np.arange(Hub.Nspecies):
+        multB_fromR(gr[s], l, s, G.HS_spins, HSparams, Hub.expmdtK)
+        multinvB_fromL(gr[s], l, s, G.HS_spins, HSparams, Hub.exppdtK)
+        
+    G.current_tau = l-1
 
 
 def sweep_0_to_beta_init():
@@ -321,24 +435,31 @@ def sweep_0_to_beta(Hub, G, HSparams, iscratch=8):
     """
     assert(isinstance(Hub, Hubbard))
     assert(isinstance(G, Global))
-    assert(isinstance(HSparams, HS))    
+    assert(isinstance(HSparams, HS))
     # at tau=0: init UDV stack (missing)
     l = 0
-    make_gr(l, Hub, G, HSparams, stab_type='svd', istab=8)
-    for l in np.arange(1, Hub.Ntau, +1):  # l=1,2,...,Ntau-1
-        for s in np.arange(Hub.Nspecies):
-            if (s==0):
-                wrap_north(G.gr_up[:,:], l-1, s, Hub, G, HSparams)
-            else:
-                wrap_north(G.gr_dn[:,:], l-1, s, Hub, G, HSparams)           
+    weight, sign = make_gr(l, Hub, G, HSparams, stab_type='svd', istab=8)
 
+    for l in np.arange(1, Hub.Ntau, +1):  # l=1,2,...,Ntau-1
+        wrap_north(G.gr, l-1, Hub, G, HSparams)
         for i in np.arange(Hub.Nsites):
-            update_gr_Metropolis(G.gr, i, l, Hub, G, HSparams)              
+            updated = Metropolis_update(G.gr, i, l, Hub, G, HSparams)          
         if (l % iscratch == 0):
             # Compute the propagation matrix
             # from the previous stabilization point to l
-            # using the UDV stack.
-            pass
+            # using the UDV stack. (not implemented)
+
+            gr_old = G.gr.copy()
+            # simply recompute Green's function
+            weight, sign = make_gr(l, Hub, G, HSparams,
+                                   stab_type='svd', istab=8)
+            for s in np.arange(Hub.Nspecies):
+                if (not check_gr(G.gr[s], gr_old[s])):
+                    print("checked gr:")
+                    print("l=", l, "gr_old[s]=", gr_old[s])
+                    print("G.gr[s]=", G.gr[s])
+                    exit()
+            del gr_old
 
         # Measure the equal-time observables.
 
@@ -346,7 +467,7 @@ def sweep_0_to_beta(Hub, G, HSparams, iscratch=8):
 def sweep_beta_to_0(Hub, G, HSparams, iscratch=8):
     """
         Update the space-time lattice of auxiliary fields. 
- 
+
         For l=Ntau-2,Ntau-3,...,1,0  do the following:
             Propagate the Green's function from time l+1 to time l,
             and compute a new estimate (using the low-rank update) of the 
@@ -359,15 +480,25 @@ def sweep_beta_to_0(Hub, G, HSparams, iscratch=8):
     # at tau=beta: adjust UDV stack
 
     for l in np.arange(Hub.Ntau-2, 0-1, -1):  # l=Ntau-2,Ntau-3,...,1,0
-        for s in np.arange(Hub.Nspecies):
-            wrap_south(G.gr[s,:,:], l+1, s, Hub, G, HSparams)
+        wrap_south(G.gr, l+1, Hub, G, HSparams)
         for i in np.arange(Hub.Nsites):
-            update_gr_Metropolis(G.gr, i, l, Hub, G, HSparams)
+            updated = Metropolis_update(G.gr, i, l, Hub, G, HSparams)
         if (l % iscratch == 0):
             # Compute the propagation matrix
             # from the previous stabilization point to l
-            # using the UDV stack.
-            pass
+            # using the UDV stack. (not implemented)
+
+            gr_old = G.gr.copy()
+            # simply recompute Green's function
+            weight, sign = make_gr(l, Hub, G, HSparams,
+                                   stab_type='svd', istab=8)
+            for s in np.arange(Hub.Nspecies):
+                if (not check_gr(G.gr[s], gr_old[s])):
+                    print("checked gr")
+                    print("gr_old[s]=", gr_old[s])
+                    print("G.gr[s]=", G.gr[s])
+                    exit()
+            del gr_old
 
         # Measure the equal-time observables.
 
@@ -386,3 +517,11 @@ def sweep(Hub, G, HSparams, iscratch=8):
     sweep_beta_to_0(Hub, G, HSparams, iscratch)
 
     # Measure the time-displaced observables.
+
+
+def _test():
+    import doctest
+    doctest.testmod()
+
+if __name__ == "__main__":
+    _test()
