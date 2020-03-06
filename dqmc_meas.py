@@ -56,3 +56,40 @@ def meas_density(gr_up, gr_dn, Hub, G):
     
     # take care of the sign problem generically  
     return G.sign * density     
+
+
+def init_output_GreenF(Hub, outfilename="GreenF", suffix=""):
+    """
+        suffix: e.g. 'ncpu000'
+    """
+    outfilename += suffix
+    for s in np.arange(Hub.Nspecies):        
+        outfile = outfilename+r'_up.dat' if s==0 else outfilename+r'_dn.dat'
+        fh = open(outfile, 'w')
+        fh.close()
+    return outfilename
+
+
+def output_GreenF(G, Hub, outfilename="GreenF"):
+    """
+        Append the i'nstantaneous (i.e. for given HS configuration) 
+        single particle Green's functions for both spin species 
+        to a file with the basename `outfilename`.
+
+        Successive outputs of Green's functions are separated by two empty 
+        lines. 
+    """
+    assert(isinstance(Hub, Hubbard))
+    assert(isinstance(G, Global))    
+    assert(len(G.gr[0].shape)==2); assert(len(G.gr[1].shape)==2)
+    assert(G.gr[0].shape[0] == G.gr[0].shape[1]);  assert(G.gr[1].shape[0] == G.gr[1].shape[1])
+    Nsites = G.gr[0].shape[0]
+
+    for s in np.arange(Hub.Nspecies):
+        outfile = outfilename+r'_up.dat' if s==0 else outfilename+r'_dn.dat'
+        with open(outfile, 'a') as fh:
+            for i in np.arange(Nsites):
+                fh.writelines([str(e)+"\t" for e in G.gr[s][i]]+["\n"])
+            # two empty lines 
+            fh.writelines("\n\n")
+

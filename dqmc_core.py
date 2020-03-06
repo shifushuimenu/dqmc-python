@@ -17,7 +17,9 @@
 # - Use `@` instead of dot() or matmul(). 
 # - Check redundancies in `lrange = np.roll() ...`
 
+
 import numpy as np
+from profilehooks import profile 
 from scipy import linalg
 
 
@@ -36,7 +38,7 @@ class HS():
             # Different sign of the coupling for spin up and down: bb[0]=+1, bb[-1]=-1
             self.bb = np.array([+1, -1])
             self.dtau = dtau
-            self.cc = np.zeros(Nspecies, dtype=np.float32)
+            self.cc = np.zeros(Nspecies, dtype=np.float64)
             self.cc[:] = dtau*(mu[:] - abs(Uint)/2)
 
             self.gamma = np.zeros((Nspecies, 3))
@@ -132,11 +134,13 @@ def multB_fromL(A, l, s, HS_spins, HSparams, expmdtK):
     """
     assert(isinstance(HSparams, HS))
     HS_spins = np.array(HS_spins)
+    
+    X1 = np.matmul(expmdtK, A) # IMPROVE: checkerboard decomposition 
 
-    X1 = np.matmul(expmdtK, A)
-    X2 = np.diag(
-        np.exp(HSparams.alpha*HSparams.bb[s]*HS_spins[:, l] - HSparams.cc[s]))
-    A[:, :] = np.matmul(X2, X1) # IMPROVE: sparse matrix multiplication
+    # sparse matrix multiplication: Multiplication from the left with a 
+    # diagonal matrix amounts to row rescaling.
+    X2 = np.exp(HSparams.alpha*HSparams.bb[s]*HS_spins[:, l] - HSparams.cc[s])
+    A[:, :] = np.multiply(X2[:,None], X1)
 
 
 def multB_fromR(A, l, s, HS_spins, HSparams, expmdtK):
@@ -154,9 +158,10 @@ def multB_fromR(A, l, s, HS_spins, HSparams, expmdtK):
     assert(isinstance(HSparams, HS))
     HS_spins = np.array(HS_spins)
 
-    X1 = np.diag(
-        np.exp(HSparams.alpha*HSparams.bb[s]*HS_spins[:, l] - HSparams.cc[s]))
-    X2 = np.matmul(A, X1)         # IMPROVE: sparse matrix multiplication
+    X1 = np.exp(HSparams.alpha*HSparams.bb[s]*HS_spins[:, l] - HSparams.cc[s])
+    # sparse matrix multiplication: Multiplication with a diagonal matrix from the right 
+    # amounts to column rescaling. 
+    X2 = np.multiply(A, X1)       
     A[:, :] = np.matmul(X2, expmdtK)  # IMPROVE: checkerboard decomposition
 
 
@@ -175,10 +180,11 @@ def multinvB_fromR(A, l, s, HS_spins, HSparams, exppdtK):
     assert(isinstance(HSparams, HS))
     HS_spins = np.array(HS_spins)
 
-    X1 = np.matmul(A, exppdtK)
-    X2 = np.diag(
-        np.exp(-HSparams.alpha*HSparams.bb[s]*HS_spins[:, l] + HSparams.cc[s]))
-    A[:, :] = np.matmul(X1, X2) # IMPROVE: sparse matrix multiplication
+    X1 = np.matmul(A, exppdtK) # IMPROVE: checkerboard decomposition 
+    # sparse matrix multiplication: Multiplication with a diagonal matrix from the right 
+    # amounts to column rescaling.     
+    X2 = np.exp(-HSparams.alpha*HSparams.bb[s]*HS_spins[:, l] + HSparams.cc[s])
+    A[:, :] = np.multiply(X1, X2) 
 
 
 def multinvB_fromL(A, l, s, HS_spins, HSparams, exppdtK):
@@ -196,12 +202,13 @@ def multinvB_fromL(A, l, s, HS_spins, HSparams, exppdtK):
     assert(isinstance(HSparams, HS))
     HS_spins = np.array(HS_spins)
 
-    X1 = np.diag(
-        np.exp(-HSparams.alpha*HSparams.bb[s]*HS_spins[:, l] + HSparams.cc[s]))
-    X2 = np.matmul(X1, A)             # IMPROVE: sparse matrix multiplication
+    X1 =  np.exp(-HSparams.alpha*HSparams.bb[s]*HS_spins[:, l] + HSparams.cc[s])
+    # sparse matrix multiplication: Multiplication from the left with a 
+    # diagonal matrix amounts to row rescaling.        
+    X2 = np.multiply(X1[:,None], A)            
     A[:, :] = np.matmul(exppdtK, X2)  # IMPROVE: checkerboard decomposition
 
-
+@profile(filename='out.prof', stdout=False)
 def make_gr(l, Hub, G, HSparams, stab_type='svd', istab=8):
     """
         Compute the single-particle Green's function at time slice l
@@ -266,12 +273,27 @@ def make_gr(l, Hub, G, HSparams, stab_type='svd', istab=8):
     return weight_tot, np.sign(weight_tot)
 
 
-def check_gr(gr_from_scratch, gr_old):
+def check_gr(gr_from_scratch, gr_old, Hub):
     """
-
+        gr_from_scratch[0:Nspecies, 0:Nsites, 0:Nsites]
+        gr_old[0:Nspecies, 0:Nsites, 0:Nsites]
     """
-    return np.allclose(gr_from_scratch, gr_old, rtol=1e-3, atol=1e-3)
+    assert(isinstance(Hub, Hubbard))
 
+    from dqmc_stab import RTOL, ATOL
+
+    abort=False
+    for s in np.arange(Hub.Nspecies):
+        if not np.allclose(gr_from_scratch[s], gr_old[s], rtol=RTOL, atol=ATOL):
+            abort=True
+            print("checked gr, spins s=%d"%(s))
+            print("gr_old=", gr_old[s])
+            print("G.gr=", gr_from_scratch[s])
+            print(np.isclose(gr_from_scratch[s], gr_old[s]))
+    if(abort):
+        exit()
+
+    return True
 
 def update_gr_lowrank(gr, i, l, Hub, G, HSparams):
     """
@@ -288,7 +310,7 @@ def update_gr_lowrank(gr, i, l, Hub, G, HSparams):
         for both spin species. 
         The matrix gr[:,:,:] is changed in place. 
     """
-    ratio = np.zeros(Hub.Nspecies, dtype=np.float32)
+    ratio = np.zeros(Hub.Nspecies, dtype=np.float64)
     for s in np.arange(Hub.Nspecies):
         ratio[s] = 1 + (1 - gr[s, i, i]) * HSparams.gamma[s, G.HS_spins[i, l]]
 
@@ -306,8 +328,9 @@ def update_gr_lowrank(gr, i, l, Hub, G, HSparams):
                             * gr_old[s, j, i]) / ratio[s]
 
     # update HS field configuration *after* updating the Green's function. 
-    G.HS_spins[i,l] = - G.HS_spins[i,l]
+    G.HS_spins[i,l] = -G.HS_spins[i,l]
 
+@profile(filename='out.prof', stdout=False)
 def Metropolis_update(gr, i, l, Hub, G, HSparams):
     """
         Update a HS field at space-time position (i,l) with Metropolis 
@@ -334,7 +357,7 @@ def Metropolis_update(gr, i, l, Hub, G, HSparams):
     assert(G.current_tau == l)
 
     # determinant ratios
-    ratio = np.zeros(Hub.Nspecies, dtype=np.float32)
+    ratio = np.zeros(Hub.Nspecies, dtype=np.float64)
     R = 1.0
     for s in np.arange(Hub.Nspecies):
         ratio[s] = 1 + (1 - gr[s, i, i]) * \
@@ -410,13 +433,61 @@ def wrap_south(gr, l, Hub, G, HSparams):
     G.current_tau = l-1
 
 
-def sweep_0_to_beta_init():
+def sweep_0_to_beta_initUDV(Hub, G, HSparams, istab=8):
     """
         First sweep from 0 to beta to initialize the UDV stack. 
 
         Not implemented. 
     """
-    pass
+    assert(isinstance(Hub, Hubbard))
+    assert(isinstance(G, Global))
+    assert(isinstance(HSparams, HS))    
+
+    nt = np.floor(Hub.Ntau / istab)
+    Umat_up = np.zeros((Hub.Nsites, Hub.Nsites, nt))
+    Vmat_up = np.zeros((Hub.Nsites, Hub.Nsites, nt))
+    Dvec_up = np.zeros((Hub.Nsites, nt))
+
+    Umat_dn = np.zeros((Hub.Nsites, Hub.Nsites, nt))
+    Vmat_dn = np.zeros((Hub.Nsites, Hub.Nsites, nt))
+    Dvec_dn = np.zeros((Hub.Nsites, nt))
+    it = -1
+
+    for s in range(Hub.Nspecies):
+
+        lrange = np.roll(np.arange(Hub.Ntau)[::-1], l+1)
+        A = np.eye(Hub.Nsites)
+        U_tmp = np.eye(Hub.Nsites)
+        V_tmp = np.eye(Hub.Nsites)
+        s_tmp = np.ones(Hub.Nsites)
+        for idx, ll in enumerate(lrange[::-1]):
+            # kinetic term is assumed to be the same for both spin species
+            multB_fromL(A, ll, s, G.HS_spins, HSparams, Hub.expmdtK)
+            if (idx % istab == 0):
+                it += 1
+                # stabilization: UDV decomposition of a *column-stratified matrix* is numerically stable
+                A = A.dot(U_tmp).dot(np.diag(s_tmp))
+                U_tmp, s_tmp, Vh = linalg.svd(A)
+                # Chains of unitary matrices can be multiplied together in a stable manner.
+                V_tmp = np.dot(Vh, V_tmp)
+
+                # initialize UDV stack  
+                if (s == 0):
+                    Umat_up[:,:,it] = U_tmp[:,:]
+                    Dvec_up[:,it] = s_tmp[:]
+                    Vmat_up[:,:,it] = V_tmp[:,:]
+                else:
+                    Umat_dn[:,:,it] = U_tmp[:,:]
+                    Dvec_dn[:,it] = s_tmp[:]
+                    Vmat_dn[:,:,it] = V_tmp[:,:]
+
+                A = np.eye(Hub.Nsites)
+        # take care of the excess B_l matrices which are due to the fact
+        # that 'Ntau' is not a perfect multiple of 'istab'. (???)   
+
+
+    return Umat_up, Dvec_up, Vmat_up, Umat_dn, Dvec_dn, Vmat_dn
+
 
 
 def sweep_0_to_beta(Hub, G, HSparams, iscratch=8):
@@ -453,12 +524,7 @@ def sweep_0_to_beta(Hub, G, HSparams, iscratch=8):
             # simply recompute Green's function
             weight, sign = make_gr(l, Hub, G, HSparams,
                                    stab_type='svd', istab=8)
-            for s in np.arange(Hub.Nspecies):
-                if (not check_gr(G.gr[s], gr_old[s])):
-                    print("checked gr:")
-                    print("l=", l, "gr_old[s]=", gr_old[s])
-                    print("G.gr[s]=", G.gr[s])
-                    exit()
+            check_gr(G.gr, gr_old, Hub)                                   
             del gr_old
 
         # Measure the equal-time observables.
@@ -492,12 +558,7 @@ def sweep_beta_to_0(Hub, G, HSparams, iscratch=8):
             # simply recompute Green's function
             weight, sign = make_gr(l, Hub, G, HSparams,
                                    stab_type='svd', istab=8)
-            for s in np.arange(Hub.Nspecies):
-                if (not check_gr(G.gr[s], gr_old[s])):
-                    print("checked gr")
-                    print("gr_old[s]=", gr_old[s])
-                    print("G.gr[s]=", G.gr[s])
-                    exit()
+            check_gr(G.gr, gr_old, Hub)                                   
             del gr_old
 
         # Measure the equal-time observables.

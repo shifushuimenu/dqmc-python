@@ -13,10 +13,22 @@ class DQMC():
     """
         Determinantal QMC object: Set parameters,
         run a QMC simulation and output the results. 
+
+        Parameters:
+        -----------
+        If debug==True, the random number generator is initialized 
+        with a fixed seed number to make the runs reproducible. 
+
+        `suffix`: string,  is used to label output files in a parallel MPI run. 
     """
 
-    def __init__(self, lattice_type, NN, Uint, mu, beta, dtau):
+    def __init__(self, lattice_type, NN, Uint, mu, beta, dtau, output_GF=True, suffix="", debug=False):
         assert(lattice_type == 'chain')
+
+        self.debug = debug
+        if (self.debug):
+            np.random.seed(seed=12345)
+
         # Set the lattice and the Hamiltonian.
         self.NN = NN
         self.Uint = Uint
@@ -26,6 +38,12 @@ class DQMC():
         K_adj = hopping_matrix(lattice_type='chain', NN=4, pbc=True)
         self.Hub = Hubbard(Nsites=NN, K_adj=K_adj, Uint=Uint,
                            mu=[mu, mu], beta=beta, dtau=dtau)
+
+        self.output_GF = output_GF
+        self.suffix = suffix
+        if (self.output_GF):
+            self.ofname = init_output_GreenF(
+                self.Hub, outfilename="GreenF", suffix=self.suffix)
 
         # Global data structure: HS spins, Green's functions
         # Read in the HS configuration or generate it randomly.
@@ -51,13 +69,17 @@ class DQMC():
         # thermalization
         for itm in np.arange(ntherm):
             sweep(self.Hub, self.G, self.HSparams, iscratch=2)
-        # Loop over bins
+
+        # init observables
         density_bin = []
         magnetization_bin = []
         ene_bin = []
         sign_bin = []
 
-        timeseries_fh = open('TS.dat', 'w')
+        # =================
+        # Loop over bins
+        # =================
+        # timeseries_fh = open('TS.dat', 'w')
         for nbc in np.arange(nbin):
             print("nbc=", nbc, file=sys.stderr)
             density = 0.0
@@ -80,23 +102,30 @@ class DQMC():
                 e_t = meas_energy(self.G.gr_up, self.G.gr_dn,
                                   self.Hub.K_adj, self.Hub, self.G)
                 ene += e_t
-                timeseries_fh.write("%16.8f %16.8f %16.8f \n" % (e_t, m_t, d_t))
+                # timeseries_fh.write("%16.8f %16.8f %16.8f \n" % (e_t, m_t, d_t))
+
+                if (self.output_GF):
+                    # Output Green's function for spin up and down.
+                    output_GreenF(self.G, self.Hub, outfilename=self.ofname)
 
             density_bin.append(density / nsweep)
             magnetization_bin.append(magnetization / nsweep)
             ene_bin.append(ene / nsweep)
             sign_bin.append(sign / nsweep)
 
-        timeseries_fh.close()
-        density_bin = np.array(density_bin); magnetization_bin = np.array(magnetization_bin)
-        ene_bin = np.array(ene_bin); sign_bin = np.array(sign_bin)
+        # timeseries_fh.close()
+        density_bin = np.array(density_bin)
+        magnetization_bin = np.array(magnetization_bin)
+        ene_bin = np.array(ene_bin)
+        sign_bin = np.array(sign_bin)
 
         sign_av = np.average(sign_bin)
         # take care of sign problem in a generic way
         density_av = np.average(density_bin / sign_bin)
         density_err = np.std(density_bin / sign_bin) / np.sqrt(nbin)
         magnetization_av = np.average(magnetization_bin / sign_bin)
-        magnetization_err = np.std(magnetization_bin / sign_bin) / np.sqrt(nbin)
+        magnetization_err = np.std(
+            magnetization_bin / sign_bin) / np.sqrt(nbin)
         ene_av = np.average(ene_bin / sign_bin)
         ene_err = np.std(ene_bin / sign_bin) / np.sqrt(nbin)
         print(1.0/self.beta, self.mu, ene_av, ene_err, density_av,
@@ -105,8 +134,8 @@ class DQMC():
 
 if __name__ == "__main__":
 
-    for temp in np.linspace(1.0, 1.0, 1):
+    for temp in np.linspace(0.25, 0.25, 1):
         simu = DQMC(lattice_type='chain', NN=4,
-                    Uint=2.0, mu=1.0, beta=1.0/temp, dtau=0.0625)
-        simu.run_MC(ntherm=200, nbin=10, nsweep=200)
+                    Uint=4.0, mu=2.0, beta=1.0/temp, dtau=0.125, outputGF=True)
+        simu.run_MC(ntherm=2, nbin=1, nsweep=2)
         del simu
