@@ -19,8 +19,9 @@
 
 
 import numpy as np
-from profilehooks import profile 
 from scipy import linalg
+import datetime
+# from profilehooks import profile 
 
 
 class HS():
@@ -54,16 +55,29 @@ class HS():
 
 class Hubbard():
     """
-        Global parameters.
+        Specify global parameters.
 
         Energy scales are in units of the hopping matrix element. 
-        The kinetic terms is assumed to be the same for both spin species. 
+
+        Parameters:
+        -----------
+        K_adj: 2-D array
+            The kinetic term K_adj[:,:] is assumed to be the same for both spin species. 
+            The diagonal elements of K_adj[:,:] contain the external trapping 
+            potential. `Nsites` must be equal to K_adj.shape[0].
+        mu: 1-D array with two elements
+            mu[0]: chemical potential for spin up
+            mu[1]: chemical potential for spin down
+
+        Methods:
+        --------
+        write_simparams(filename)
+
     """
 
-    def __init__(self, Nsites, K_adj, Uint, mu, beta, dtau=0.02):
+    def __init__(self, Nsites, K_adj, Uint, mu, beta, dtau):
         self.Nsites = Nsites
-        assert(K_adj.shape[0] == K_adj.shape[1])
-        assert(K_adj.shape[0] == Nsites)
+        assert(K_adj.shape[0] == K_adj.shape[1] == Nsites)
         assert(len(mu) == 2)
         self.K_adj = K_adj
         self.Uint = Uint
@@ -85,6 +99,23 @@ class Hubbard():
         self.exppdtK[:, :] = np.matmul(U, np.matmul(
             np.diag(np.exp(+self.dtau*D)), U.transpose()))
 
+    def write_simparams(self, filename):
+        with open(filename, 'w') as fh:
+            fh.write("File generated on: %s\n\n"%str(datetime.datetime.now()))
+            fh.write("============================================\n")            
+            fh.write("Simple DQMC simulation of the Hubbard model.\n")
+            fh.write("============================================\n\n")
+            fh.write("Simulation parameters:\n")
+            fh.write("> U=%f\n"%self.Uint)
+            fh.write("> mu_up=%f\n> mu_dn=%f\n"%(self.mu[0], self.mu[1]))
+            fh.write("> Inverse temperature beta=%f\n"%(self.beta))
+            fh.write("> Ntau = %d\n"%self.Ntau)
+            fh.write("> Trotter parameter dtau=%f\n"%self.dtau)
+            fh.write("Note that `dtau` shown here may differ slightly from the one given as a parameter\n\
+because Ntau = int(beta/dtau) must be an integer.\n")
+            fh.write("> Nsites=%d"%self.Nsites)
+            fh.write("> Kinetic matrix (same for spin up and down):\n\n")
+            np.savetxt(fh, self.K_adj)
 
 class Global():
     """
@@ -135,7 +166,7 @@ def multB_fromL(A, l, s, HS_spins, HSparams, expmdtK):
     assert(isinstance(HSparams, HS))
     HS_spins = np.array(HS_spins)
     
-    X1 = np.matmul(expmdtK, A) # IMPROVE: checkerboard decomposition 
+    X1 = np.matmul(expmdtK, A) # IMPROVE: checkerboard decomposition for square lattice
 
     # sparse matrix multiplication: Multiplication from the left with a 
     # diagonal matrix amounts to row rescaling.
@@ -208,7 +239,7 @@ def multinvB_fromL(A, l, s, HS_spins, HSparams, exppdtK):
     X2 = np.multiply(X1[:,None], A)            
     A[:, :] = np.matmul(exppdtK, X2)  # IMPROVE: checkerboard decomposition
 
-@profile(filename='out.prof', stdout=False)
+# @profile(filename='out.prof', stdout=False)
 def make_gr(l, Hub, G, HSparams, stab_type='svd', istab=8):
     """
         Compute the single-particle Green's function at time slice l
@@ -291,7 +322,8 @@ def check_gr(gr_from_scratch, gr_old, Hub):
             print("G.gr=", gr_from_scratch[s])
             print(np.isclose(gr_from_scratch[s], gr_old[s]))
     if(abort):
-        exit()
+        print("Anyways, not exiting.")
+        # exit()
 
     return True
 
@@ -330,7 +362,7 @@ def update_gr_lowrank(gr, i, l, Hub, G, HSparams):
     # update HS field configuration *after* updating the Green's function. 
     G.HS_spins[i,l] = -G.HS_spins[i,l]
 
-@profile(filename='out.prof', stdout=False)
+# @profile(filename='out.prof', stdout=False)
 def Metropolis_update(gr, i, l, Hub, G, HSparams):
     """
         Update a HS field at space-time position (i,l) with Metropolis 

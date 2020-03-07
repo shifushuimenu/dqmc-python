@@ -22,22 +22,35 @@ class DQMC():
         `suffix`: string,  is used to label output files in a parallel MPI run. 
     """
 
-    def __init__(self, lattice_type, NN, Uint, mu, beta, dtau, output_GF=True, suffix="", debug=False):
-        assert(lattice_type == 'chain')
+    def __init__(self, lattice_type, NN, Uint, mu, beta, dtau, \
+        K_adj=None, output_GF=True, suffix="", debug=False):
 
         self.debug = debug
         if (self.debug):
             np.random.seed(seed=12345)
 
-        # Set the lattice and the Hamiltonian.
-        self.NN = NN
-        self.Uint = Uint
-        self.mu = mu
-        self.beta = beta
+        # Set the lattice.
+        if not K_adj:
+            assert(lattice_type == 'chain')
+            K_adj = hopping_matrix(lattice_type='chain', NN=NN, pbc=True)
+        else:
+            K_adj = np.array(K_adj)
+            assert(len(K_adj.shape) == 2)
+            assert(K_adj.shape[0] == K_adj.shape[1])
+            assert(
+                K_adj.shape[0] == NN), "Dimensions of K_adj[:,:] do not match with NN. \
+                    Please check the input file."
+            assert(lattice_type == "from_file"), "If you wish to specify the lattice by \
+                reading the adjacency matrix from file, the `lattice_type` needs to be 'from_file'."
+            
+            # Check that the hopping matrix is real and symmetric. 
+            assert(np.all(K_adj.imag==0))
+            assert(np.allclose(K_adj.transpose(), K_adj)), 'Hopping matrix is not symmetric.'
 
-        K_adj = hopping_matrix(lattice_type='chain', NN=4, pbc=True)
+        # Set the Hamiltonian.
         self.Hub = Hubbard(Nsites=NN, K_adj=K_adj, Uint=Uint,
                            mu=[mu, mu], beta=beta, dtau=dtau)
+        self.Hub.write_simparams('simparams_model.dat')                           
 
         self.output_GF = output_GF
         self.suffix = suffix
@@ -47,7 +60,7 @@ class DQMC():
 
         # Global data structure: HS spins, Green's functions
         # Read in the HS configuration or generate it randomly.
-        self.G = Global(Nsites=self.NN, Ltrot=self.Hub.Ntau, init='hot')
+        self.G = Global(Nsites=NN, Ltrot=self.Hub.Ntau, init='hot')
         # Initialize parameters of the HS transformation
         self.HSparams = HS(dtau=self.Hub.dtau, Uint=self.Hub.Uint,
                            mu=self.Hub.mu, Nspecies=self.Hub.Nspecies)
@@ -81,7 +94,7 @@ class DQMC():
         # =================
         # timeseries_fh = open('TS.dat', 'w')
         for nbc in np.arange(nbin):
-            print("nbc=", nbc, file=sys.stderr)
+            # print("nbc=", nbc, file=sys.stderr)
             density = 0.0
             magnetization = 0.0
             ene = 0.0
@@ -128,14 +141,14 @@ class DQMC():
             magnetization_bin / sign_bin) / np.sqrt(nbin)
         ene_av = np.average(ene_bin / sign_bin)
         ene_err = np.std(ene_bin / sign_bin) / np.sqrt(nbin)
-        print(1.0/self.beta, self.mu, ene_av, ene_err, density_av,
-              density_err, magnetization_av, magnetization_err, sign_av)
+        # print(1.0/self.beta, self.mu, ene_av, ene_err, density_av,
+        #   density_err, magnetization_av, magnetization_err, sign_av)
 
 
 if __name__ == "__main__":
 
     for temp in np.linspace(0.25, 0.25, 1):
         simu = DQMC(lattice_type='chain', NN=4,
-                    Uint=4.0, mu=2.0, beta=1.0/temp, dtau=0.125, outputGF=True)
+                    Uint=4.0, mu=2.0, beta=1.0/temp, dtau=0.125, K_adj=None, output_GF=True)
         simu.run_MC(ntherm=2, nbin=1, nsweep=2)
         del simu
