@@ -1,1 +1,4 @@
-
+1. fast stabilization exploiting the UDV stack (missing)
+2. time-displaced correlation functions (missing)
+3. arbitrary lattice geometries specified by a hopping matrix given as input file
+4. different HS transformations
